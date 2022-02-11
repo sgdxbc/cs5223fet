@@ -1,0 +1,19 @@
+[package]
+name = "cs5223fet"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.53"
+futures = "0.3.21"
+oauth2 = "4.1.0"
+redis = { version = "0.21.5", features = ["tokio-comp"] }
+reqwest = { version = "0.11.9", features = ["json"] }
+serde = "1.0.136"
+serde_derive = "1.0.136"
+tokio = { version = "1.16.1", features = ["full"] }
+warp = "0.3.2"
+
+[features]
