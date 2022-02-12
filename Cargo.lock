@@ -143,6 +143,7 @@ name = "cs5223fet"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "futures",
  "oauth2",
  "redis",

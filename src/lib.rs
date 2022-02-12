@@ -1,3 +1,4 @@
+use std::future::Future;
 use warp::reject::Reject;
 
 pub mod app;
@@ -8,5 +9,11 @@ pub mod presets {
 }
 
 #[derive(Debug)]
-pub struct AnyHowError(pub anyhow::Error);
+struct AnyHowError(pub anyhow::Error);
 impl Reject for AnyHowError {}
+
+pub fn with_anyhow<T>(
+    inner: impl Future<Output = anyhow::Result<T>>,
+) -> impl Future<Output = Result<T, warp::Rejection>> {
+    async move { inner.await.map_err(|error| AnyHowError(error).into()) }
+}

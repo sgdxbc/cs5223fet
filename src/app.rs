@@ -23,14 +23,11 @@ impl Display for AppStatus {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Disconnected(pending_id, last_id) => {
-                write!(f, "disconnected, {} waiting", last_id - pending_id + 1)
+                write!(f, "disconnected, {} waiting", last_id + 1 - pending_id)
             }
-            Self::Running(task_id, last_id) => write!(
-                f,
-                "running(#{}), {} waiting",
-                task_id,
-                last_id - task_id + 1
-            ),
+            Self::Running(task_id, last_id) => {
+                write!(f, "running(#{}), {} waiting", task_id, last_id - task_id)
+            }
             Self::StandBy(_) => write!(f, "free"),
         }
     }
@@ -68,16 +65,28 @@ struct FromWorker {
 }
 
 impl<P> App<P> {
-    pub async fn new() -> Self {
-        let client = Client::open("redis://localhost").unwrap();
-        let conn = client.get_async_connection().await.unwrap();
-        Self {
-            status: AppStatus::Disconnected(1, 0), // TODO
+    pub async fn new() -> anyhow::Result<Self> {
+        let mut conn = Client::open("redis://localhost")?
+            .get_async_connection()
+            .await?;
+        let mut last_id = 0;
+        loop {
+            if !conn.exists(format!("task:{}", last_id + 1)).await? {
+                break;
+            }
+            last_id += 1;
+            conn.hset(format!("task:{}", last_id), "canceled", true)
+                .await?;
+        }
+        println!("[app] Finish scan {} previous tasks", last_id);
+
+        Ok(Self {
+            status: AppStatus::Disconnected(last_id + 1, last_id), // TODO
             worker_tx: None,
             task_table: HashMap::new(),
             user_table: HashMap::new(),
             conn,
-        }
+        })
     }
 
     pub async fn connect_worker(app0: Arc<Mutex<Self>>, mut websocket: WebSocket)
@@ -93,8 +102,11 @@ impl<P> App<P> {
         app.worker_tx = Some(worker_tx);
         app.status = if let AppStatus::Disconnected(pending_id, last_id) = app.status {
             if pending_id <= last_id {
-                app.send_task(pending_id).await;
-                AppStatus::Running(pending_id, last_id)
+                if let Some(task_id) = app.send_task(pending_id).await {
+                    AppStatus::Running(task_id, last_id)
+                } else {
+                    AppStatus::StandBy(last_id)
+                }
             } else {
                 AppStatus::StandBy(last_id)
             }
@@ -114,7 +126,7 @@ impl<P> App<P> {
                             break;
                         }
                         if !message.is_text() {
-                            println!("warning: non-text message from worker: {:?}", message);
+                            println!("[app] warning: non-text message from worker: {:?}", message);
                             continue;
                         }
                         let from_worker: FromWorker = from_str(&message.to_str().unwrap()).unwrap();
@@ -128,7 +140,17 @@ impl<P> App<P> {
         });
     }
 
-    async fn send_task(&mut self, pending_id: u32) {
+    async fn send_task(&mut self, mut pending_id: TaskId) -> Option<TaskId> {
+        loop {
+            if let Some(task) = self.task_table.get(&pending_id) {
+                if !task.canceled {
+                    break;
+                }
+            } else {
+                return None;
+            }
+            pending_id += 1;
+        }
         let to_worker = ToWorker {
             task_id: pending_id,
             command: format!(""), // TODO
@@ -140,6 +162,7 @@ impl<P> App<P> {
             .send(to_worker)
             .await
             .unwrap();
+        Some(pending_id)
     }
 
     async fn finish_task(&mut self, from_worker: FromWorker) {
@@ -148,9 +171,10 @@ impl<P> App<P> {
             let pending_id = task_id + 1;
             self.status = if pending_id > last_id {
                 AppStatus::StandBy(last_id)
+            } else if let Some(task_id) = self.send_task(pending_id).await {
+                AppStatus::Running(task_id, last_id)
             } else {
-                self.send_task(pending_id).await;
-                AppStatus::Running(pending_id, last_id)
+                AppStatus::StandBy(last_id)
             };
         } else {
             unreachable!();
@@ -191,38 +215,30 @@ impl<P: Preset> App<P> {
             AppStatus::StandBy(last_id) => last_id,
         };
         let task_id = last_id + 1;
-        self.register_task(task_id, task).await;
+        self.register_task(task_id, task).await?;
         self.status = match self.status {
             AppStatus::Disconnected(id, _) => AppStatus::Disconnected(id, task_id),
             AppStatus::Running(id, _) => AppStatus::Running(id, task_id),
             AppStatus::StandBy(_) => {
-                self.send_task(task_id).await;
+                let id = self.send_task(task_id).await;
+                assert_eq!(id, Some(task_id));
                 AppStatus::Running(task_id, task_id)
             }
         };
         Ok(task_id)
     }
 
-    async fn register_task(&mut self, task_id: u32, task: Task<P>) {
+    async fn register_task(&mut self, task_id: u32, task: Task<P>) -> anyhow::Result<()> {
         assert!(!task.canceled);
         let prev = self.task_table.insert(task_id, task.clone());
         assert!(prev.is_none());
 
         let key = format!("task:{}", task_id);
-        let _: () = self
-            .conn
-            .hset(&key, "user-id", &task.user_id)
-            .await
-            .unwrap();
-        let _: () = self
-            .conn
+        self.conn.hset(&key, "user-id", &task.user_id).await?;
+        self.conn
             .hset(&key, "preset", to_string(&task.preset).unwrap())
-            .await
-            .unwrap();
-        let _: () = self
-            .conn
-            .hset(&key, "canceled", task.canceled)
-            .await
-            .unwrap();
+            .await?;
+        self.conn.hset(&key, "canceled", task.canceled).await?;
+        Ok(())
     }
 }

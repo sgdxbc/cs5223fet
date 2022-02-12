@@ -1,61 +1,96 @@
+use anyhow::anyhow;
+use bytes::BufMut;
 use cs5223fet::app::{App, Task};
-use cs5223fet::oauth::{login_recover, redirect, user_id, OAuth};
-use cs5223fet::AnyHowError;
+use cs5223fet::oauth::OAuth;
+use cs5223fet::with_anyhow;
+use futures::prelude::*;
+use serde_json::from_slice;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use warp::reply;
-use warp::Filter;
+use warp::multipart::FormData;
+use warp::{reply, Filter};
 
 use cs5223fet::presets::demo::Preset;
 
+const UNIVERSAL: &'static str = r#"
+<link href="https://fonts.googleapis.com/css2?family=Fira+Sans&display=swap" rel="stylesheet">
+<style>html { font-family: 'Fira Sans', sans-serif; }</style>
+"#;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let oauth = Arc::new(OAuth::new()?);
-    let app = Arc::new(Mutex::new(App::<Preset>::new().await));
-    let home_prompt = String::from(r#"<a href="/">Home</a>"#);
+    let app = Arc::new(Mutex::new(App::<Preset>::new().await?));
+
+    let home_prompt = format!(r#"{}<a href="/">Home</a>"#, UNIVERSAL);
+    let login_prompt = format!(r#"{}<a href="{}">Login</a>"#, UNIVERSAL, oauth.url);
 
     let home_app = app.clone();
-    let route = user_id().and(warp::path::end()).then(move |id| {
+    let route = oauth.user_id().and(warp::path::end()).then(move |id| {
         let home_app = home_app.clone();
         async move {
             reply::html(format!(
                 r#"
-            <p>CS5223 Slow and Hard Test</p>
-            <p>System status: {}</p>
-            <p>GitHub id: {}</p>
-            "#,
+{}
+<p>CS5223 Slow and Hard Test</p>
+<p>System status: {}</p>
+<p>GitHub id: {}</p>
+"#,
+                UNIVERSAL,
                 home_app.lock().await.status,
                 id
             ))
         }
     });
     let submit_app = app.clone();
-    let route = route.or(user_id()
-        .and(warp::path("task/submit"))
+    let route = route.or(oauth
+        .user_id()
+        .and(warp::path!("task" / "submit"))
         .and(warp::post())
-        .and(warp::body::json())
-        .and_then(move |id, preset: Preset| {
+        .and(warp::multipart::form().max_length(50_000))
+        .and_then(move |id, form: FormData| {
             let submit_app = submit_app.clone();
-            async move {
-                let result = submit_app
+            with_anyhow(async move {
+                let mut form: HashMap<_, _> = form
+                    .map_ok(|part| (part.name().to_string(), part.stream()))
+                    .try_collect()
+                    .await?;
+                let preset = form
+                    .remove("preset")
+                    .ok_or(anyhow!("no preset in submission"))?
+                    .try_fold(Vec::new(), |mut preset, data| {
+                        preset.put(data);
+                        async { Ok(preset) }
+                    })
+                    .await?;
+                let preset = from_slice(&preset)?;
+                let upload = form
+                    .remove("upload")
+                    .ok_or(anyhow!("no upload in submission"))?
+                    .try_fold(Vec::new(), |mut upload, data| {
+                        upload.put(data);
+                        async { Ok(upload) }
+                    })
+                    .await?;
+
+                let task_id = submit_app
                     .lock()
                     .await
                     .push_task(Task {
                         user_id: id,
                         preset,
-                        upload: Vec::new(), // TODO
+                        upload,
                         canceled: false,
                     })
-                    .await;
-                let task_id = match result {
-                    Ok(task_id) => task_id,
-                    Err(error) => return Err(Into::<warp::Rejection>::into(AnyHowError(error))),
-                };
-                Ok(reply::html(format!("Task #{} submitted", task_id)))
-            }
+                    .await?;
+                Ok(reply::html(format!(
+                    "{}<p>Task #{} submitted</p>",
+                    UNIVERSAL, task_id
+                )))
+            })
         }));
 
-    let route = route.or(redirect(oauth.clone(), home_prompt.clone()));
+    let route = route.or(oauth.redirect(home_prompt.clone()));
 
     let websocket_app = app.clone();
     let route = route.or(warp::path("websocket")
@@ -65,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
             ws.on_upgrade(|websocket| App::connect_worker(websocket_app, websocket))
         }));
 
-    let route = login_recover(route, oauth);
+    let route = OAuth::recover(route, login_prompt);
     warp::serve(route).run(([0, 0, 0, 0], 8080)).await;
     Ok(())
 }
