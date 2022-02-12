@@ -1,11 +1,19 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::fmt::Display;
-use std::iter::Iterator;
 
 pub trait Preset
 where
-    Self: Send + Sync + Clone + Serialize + Deserialize<'static> + Display,
+    Self: Send
+        + Sync
+        + Clone
+        + Serialize
+        + Deserialize<'static>
+        + Display
+        + TryFrom<HashMap<String, String>, Error = anyhow::Error>,
 {
-    type Iter: Iterator<Item = Self>;
-    fn enumerate() -> Self::Iter;
+    fn render_html() -> String;
+    fn get_command(&self) -> String;
+    fn get_timeout(&self) -> u32;
 }

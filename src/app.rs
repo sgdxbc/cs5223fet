@@ -54,6 +54,7 @@ pub struct Task<Preset> {
 struct ToWorker {
     task_id: TaskId,
     command: String,
+    upload: Vec<u8>,
     timeout: u32, // in second
 }
 
@@ -89,6 +90,17 @@ impl<P> App<P> {
         })
     }
 
+    fn disconnect_worker(&mut self) {
+        self.status = match self.status {
+            AppStatus::Disconnected(_, _) => unreachable!(),
+            AppStatus::Running(task_id, last_id) => AppStatus::Disconnected(task_id, last_id),
+            AppStatus::StandBy(last_id) => AppStatus::Disconnected(last_id + 1, last_id),
+        };
+        self.worker_tx = None;
+    }
+}
+
+impl<P: Preset> App<P> {
     pub async fn connect_worker(app0: Arc<Mutex<Self>>, mut websocket: WebSocket)
     where
         P: 'static + Send,
@@ -125,8 +137,10 @@ impl<P> App<P> {
                         if message.is_close() {
                             break;
                         }
-                        if !message.is_text() {
-                            println!("[app] warning: non-text message from worker: {:?}", message);
+                        if !message.is_text()   {
+                            if message.is_binary() {
+                                println!("[app] warning: binary message from worker: {:?}", message);
+                            }
                             continue;
                         }
                         let from_worker: FromWorker = from_str(&message.to_str().unwrap()).unwrap();
@@ -138,31 +152,6 @@ impl<P> App<P> {
             websocket.close().await.unwrap();
             app0.lock().await.disconnect_worker();
         });
-    }
-
-    async fn send_task(&mut self, mut pending_id: TaskId) -> Option<TaskId> {
-        loop {
-            if let Some(task) = self.task_table.get(&pending_id) {
-                if !task.canceled {
-                    break;
-                }
-            } else {
-                return None;
-            }
-            pending_id += 1;
-        }
-        let to_worker = ToWorker {
-            task_id: pending_id,
-            command: format!(""), // TODO
-            timeout: 0,
-        };
-        self.worker_tx
-            .as_ref()
-            .unwrap()
-            .send(to_worker)
-            .await
-            .unwrap();
-        Some(pending_id)
     }
 
     async fn finish_task(&mut self, from_worker: FromWorker) {
@@ -181,17 +170,31 @@ impl<P> App<P> {
         }
     }
 
-    fn disconnect_worker(&mut self) {
-        self.status = match self.status {
-            AppStatus::Disconnected(_, _) => unreachable!(),
-            AppStatus::Running(task_id, last_id) => AppStatus::Disconnected(task_id, last_id),
-            AppStatus::StandBy(last_id) => AppStatus::Disconnected(last_id + 1, last_id),
+    async fn send_task(&mut self, mut pending_id: TaskId) -> Option<TaskId> {
+        let to_worker = loop {
+            if let Some(task) = self.task_table.get(&pending_id) {
+                if !task.canceled {
+                    break ToWorker {
+                        task_id: pending_id,
+                        command: task.preset.get_command(),
+                        upload: task.upload.clone(),
+                        timeout: task.preset.get_timeout(),
+                    };
+                }
+            } else {
+                return None;
+            }
+            pending_id += 1;
         };
-        self.worker_tx = None;
+        self.worker_tx
+            .as_ref()
+            .unwrap()
+            .send(to_worker)
+            .await
+            .unwrap();
+        Some(pending_id)
     }
-}
 
-impl<P: Preset> App<P> {
     pub async fn push_task(&mut self, task: Task<P>) -> anyhow::Result<TaskId> {
         let user_last = self
             .user_table

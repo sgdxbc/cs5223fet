@@ -7,10 +7,10 @@ async def main():
         print(websocket)
         while True:
             to_worker = json.loads(await websocket.recv())
-            print(to_worker)
+            print(to_worker['command'])
             sleep_lit, second = to_worker['command'].split()
             second = int(second)
-            asyncio.sleep(second)
+            await asyncio.sleep(second)
             
             result = f'finished task #{to_worker["task_id"]}'
             print(result)

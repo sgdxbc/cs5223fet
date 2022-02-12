@@ -2,6 +2,7 @@ use anyhow::anyhow;
 use bytes::BufMut;
 use cs5223fet::app::{App, Task};
 use cs5223fet::oauth::OAuth;
+use cs5223fet::preset::Preset as _;
 use cs5223fet::with_anyhow;
 use futures::prelude::*;
 use serde_json::from_slice;
@@ -35,14 +36,44 @@ async fn main() -> anyhow::Result<()> {
 <p>CS5223 Slow and Hard Test</p>
 <p>System status: {}</p>
 <p>GitHub id: {}</p>
+<form id="submit-form" action="http://localhost:8080/task/submit" method="post" enctype="multipart/form-data">
+    <input type="file" name="upload">
+    <input id="submit-preset" type="hidden" name="preset">
+    {}
+    <button id="submit-button" type="submit" disabled>Submit</button>
+</form>
+<script>
+let form;
+function start() {{
+    form = document.querySelector('#submit-form');
+    form.addEventListener('submit', onSubmit);
+    
+    const button = document.querySelector('#submit-button');
+    button.disabled = false;
+}}
+function onSubmit(e) {{
+    const preset = new Object;
+    for (let child of form.childNodes) {{
+        if (!child.name || !child.name.startsWith(':')) {{
+            continue;
+        }}
+        preset[child.name] = child.value;
+    }}
+    const presetNode = document.querySelector('#submit-preset');
+    presetNode.value = JSON.stringify(preset);
+}}
+window.addEventListener('DOMContentLoaded', start);
+</script>
 "#,
                 UNIVERSAL,
                 home_app.lock().await.status,
-                id
+                id,
+                Preset::render_html()
             ))
         }
     });
     let submit_app = app.clone();
+    let submit_home_prompt = home_prompt.clone();
     let route = route.or(oauth
         .user_id()
         .and(warp::path!("task" / "submit"))
@@ -50,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
         .and(warp::multipart::form().max_length(50_000))
         .and_then(move |id, form: FormData| {
             let submit_app = submit_app.clone();
+            let submit_home_prompt = submit_home_prompt.clone();
             with_anyhow(async move {
                 let mut form: HashMap<_, _> = form
                     .map_ok(|part| (part.name().to_string(), part.stream()))
@@ -63,7 +95,8 @@ async fn main() -> anyhow::Result<()> {
                         async { Ok(preset) }
                     })
                     .await?;
-                let preset = from_slice(&preset)?;
+                let preset: HashMap<String, String> = from_slice(&preset)?;
+                let preset: Preset = preset.try_into()?;
                 let upload = form
                     .remove("upload")
                     .ok_or(anyhow!("no upload in submission"))?
@@ -72,6 +105,9 @@ async fn main() -> anyhow::Result<()> {
                         async { Ok(upload) }
                     })
                     .await?;
+                if upload.is_empty() {
+                    return Err(anyhow!("submission is empty"));
+                }
 
                 let task_id = submit_app
                     .lock()
@@ -85,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
                     .await?;
                 Ok(reply::html(format!(
                     "{}<p>Task #{} submitted</p>",
-                    UNIVERSAL, task_id
+                    submit_home_prompt, task_id
                 )))
             })
         }));
