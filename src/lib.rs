@@ -1,8 +1,12 @@
 use warp::reject::Reject;
 
-pub mod oauth;
 pub mod app;
+pub mod oauth;
+pub mod preset;
+pub mod presets {
+    pub mod demo;
+}
 
 #[derive(Debug)]
-pub struct AnyHowError(anyhow::Error);
+pub struct AnyHowError(pub anyhow::Error);
 impl Reject for AnyHowError {}

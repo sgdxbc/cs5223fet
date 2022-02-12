@@ -19,7 +19,9 @@ use warp::Filter;
 pub struct OAuth {
     client: BasicClient,
     url: Url,
-    csrf_token: CsrfToken,
+
+    #[allow(unused)]
+    csrf_token: CsrfToken, // TODO
 }
 
 impl OAuth {
@@ -110,7 +112,9 @@ pub fn redirect(
                     .await;
                 let token_resp = match token_resp {
                     Ok(resp) => resp,
-                    Err(error) => return Err(reject::custom(AnyHowError(error.into()))),
+                    Err(error) => {
+                        return Err(Into::<warp::Rejection>::into(AnyHowError(error.into())))
+                    }
                 };
                 let token = token_resp.access_token().secret();
                 Ok(reply::with_header(
