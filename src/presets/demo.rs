@@ -33,8 +33,8 @@ impl TryFrom<HashMap<String, String>> for Preset {
 impl PresetTrait for Preset {
     fn get_command(&self) -> String {
         String::from(match self {
-            Self::Sleep10 => "sleep 10",
-            Self::Sleep60 => "sleep 60",
+            Self::Sleep10 => "date; sleep 10; date",
+            Self::Sleep60 => "date; sleep 60; date",
         })
     }
     fn get_timeout(&self) -> u32 {

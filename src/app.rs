@@ -3,11 +3,14 @@ use anyhow::anyhow;
 use futures::prelude::*;
 use redis::aio::Connection;
 use redis::{AsyncCommands, Client};
+use serde::Deserialize as Deser;
 use serde_derive::{Deserialize, Serialize};
 use serde_json::{from_str, to_string};
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
+use std::mem::take;
 use std::sync::Arc;
+use tokio::fs;
 use tokio::sync::{mpsc, Mutex};
 use tokio::{select, spawn};
 use warp::ws::{Message, WebSocket};
@@ -37,7 +40,7 @@ pub struct App<Preset> {
     pub status: AppStatus,
     worker_tx: Option<mpsc::Sender<ToWorker>>,
     task_table: HashMap<TaskId, Task<Preset>>,
-    user_table: HashMap<String, Vec<TaskId>>,
+    pub user_table: HashMap<String, Vec<TaskId>>,
     conn: Connection,
 }
 
@@ -47,9 +50,16 @@ pub struct Task<Preset> {
     pub user_id: String,
     pub preset: Preset,
     pub upload: Vec<u8>,
-    pub canceled: bool,
+    pub status: TaskStatus,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskStatus {
+    Pending,
+    Running,
+    Finished,
+    Canceled,
+}
 #[derive(Debug, Serialize)]
 struct ToWorker {
     task_id: TaskId,
@@ -61,7 +71,7 @@ struct ToWorker {
 #[derive(Debug, Deserialize)]
 struct FromWorker {
     task_id: TaskId,
-    result: String,
+    output: String,
     // anything else?
 }
 
@@ -71,21 +81,37 @@ impl<P> App<P> {
             .get_async_connection()
             .await?;
         let mut last_id = 0;
+        let mut user_table: HashMap<_, Vec<_>> = HashMap::new();
         loop {
-            if !conn.exists(format!("task:{}", last_id + 1)).await? {
+            let mut query: HashMap<String, String> =
+                conn.hgetall(format!("task:{}", last_id + 1)).await?;
+            if query.is_empty() {
                 break;
             }
             last_id += 1;
-            conn.hset(format!("task:{}", last_id), "canceled", true)
+            user_table
+                .entry(query.remove("user-id").unwrap())
+                .or_default()
+                .push(last_id);
+
+            let status: TaskStatus = from_str(query.get("status").unwrap()).unwrap();
+            if status != TaskStatus::Finished {
+                // println!("[app] Cancel task #{}", last_id);
+                conn.hset(
+                    format!("task:{}", last_id),
+                    "status",
+                    to_string(&TaskStatus::Canceled).unwrap(),
+                )
                 .await?;
+            }
         }
-        println!("[app] Finish scan {} previous tasks", last_id);
+        println!("[app] Initialized with {} past tasks", last_id);
 
         Ok(Self {
-            status: AppStatus::Disconnected(last_id + 1, last_id), // TODO
+            status: AppStatus::Disconnected(last_id + 1, last_id),
             worker_tx: None,
             task_table: HashMap::new(),
-            user_table: HashMap::new(),
+            user_table,
             conn,
         })
     }
@@ -97,6 +123,37 @@ impl<P> App<P> {
             AppStatus::StandBy(last_id) => AppStatus::Disconnected(last_id + 1, last_id),
         };
         self.worker_tx = None;
+    }
+}
+
+impl<P> App<P> {
+    pub async fn get_task(&mut self, task_id: TaskId) -> anyhow::Result<Task<P>>
+    where
+        P: Clone + for<'a> Deser<'a>,
+    {
+        if let Some(task) = self.task_table.get(&task_id) {
+            return Ok(Task {
+                user_id: task.user_id.clone(),
+                preset: task.preset.clone(),
+                upload: Vec::new(), // any better way?
+                status: task.status,
+            });
+        }
+        let mut query: HashMap<String, String> =
+            self.conn.hgetall(format!("task:{}", task_id)).await?;
+        if query.is_empty() {
+            return Err(anyhow!("task not found"));
+        }
+        Ok(Task {
+            user_id: query.remove("user-id").unwrap(),
+            preset: from_str(query.get("preset").unwrap()).unwrap(),
+            upload: Vec::new(),
+            status: from_str(query.get("status").unwrap()).unwrap(),
+        })
+    }
+
+    pub fn replace_upload(&mut self, task_id: TaskId, upload: Vec<u8>) {
+        self.task_table.get_mut(&task_id).unwrap().upload = upload;
     }
 }
 
@@ -157,6 +214,23 @@ impl<P: Preset> App<P> {
     async fn finish_task(&mut self, from_worker: FromWorker) {
         if let AppStatus::Running(task_id, last_id) = self.status {
             assert_eq!(task_id, from_worker.task_id);
+
+            fs::write(format!("_fs/output/{}", task_id), from_worker.output)
+                .await
+                .unwrap();
+            println!("[app] finish write _fs/output/{}", task_id);
+
+            self.task_table.get_mut(&task_id).unwrap().status = TaskStatus::Finished;
+            let _: () = self
+                .conn
+                .hset(
+                    format!("task:{}", task_id),
+                    "status",
+                    to_string(&TaskStatus::Finished).unwrap(),
+                )
+                .await
+                .unwrap();
+
             let pending_id = task_id + 1;
             self.status = if pending_id > last_id {
                 AppStatus::StandBy(last_id)
@@ -172,20 +246,33 @@ impl<P: Preset> App<P> {
 
     async fn send_task(&mut self, mut pending_id: TaskId) -> Option<TaskId> {
         let to_worker = loop {
-            if let Some(task) = self.task_table.get(&pending_id) {
-                if !task.canceled {
-                    break ToWorker {
-                        task_id: pending_id,
-                        command: task.preset.get_command(),
-                        upload: task.upload.clone(),
-                        timeout: task.preset.get_timeout(),
-                    };
+            if let Some(task) = self.task_table.get_mut(&pending_id) {
+                match task.status {
+                    TaskStatus::Pending => {
+                        break ToWorker {
+                            task_id: pending_id,
+                            command: task.preset.get_command(),
+                            upload: take(&mut task.upload),
+                            timeout: task.preset.get_timeout(),
+                        }
+                    }
+                    TaskStatus::Canceled => pending_id += 1,
+                    _ => unreachable!(),
                 }
             } else {
                 return None;
             }
-            pending_id += 1;
         };
+        self.task_table.get_mut(&pending_id).unwrap().status = TaskStatus::Running;
+        let _: () = self
+            .conn
+            .hset(
+                format!("task:{}", pending_id),
+                "status",
+                to_string(&TaskStatus::Running).unwrap(),
+            )
+            .await
+            .unwrap(); // internal communication must success
         self.worker_tx
             .as_ref()
             .unwrap()
@@ -232,16 +319,25 @@ impl<P: Preset> App<P> {
     }
 
     async fn register_task(&mut self, task_id: u32, task: Task<P>) -> anyhow::Result<()> {
-        assert!(!task.canceled);
+        assert_eq!(task.status, TaskStatus::Pending);
         let prev = self.task_table.insert(task_id, task.clone());
         assert!(prev.is_none());
 
-        let key = format!("task:{}", task_id);
-        self.conn.hset(&key, "user-id", &task.user_id).await?;
+        self.user_table
+            .entry(task.user_id.clone())
+            .or_default()
+            .push(task_id);
+
         self.conn
-            .hset(&key, "preset", to_string(&task.preset).unwrap())
+            .hset_multiple(
+                format!("task:{}", task_id),
+                &[
+                    ("user-id", &task.user_id),
+                    ("preset", &to_string(&task.preset).unwrap()),
+                    ("status", &to_string(&task.status).unwrap()),
+                ],
+            )
             .await?;
-        self.conn.hset(&key, "canceled", task.canceled).await?;
         Ok(())
     }
 }

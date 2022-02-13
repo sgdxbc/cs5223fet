@@ -9,7 +9,7 @@ where
         + Sync
         + Clone
         + Serialize
-        + Deserialize<'static>
+        + for<'a> Deserialize<'a>
         + Display
         + TryFrom<HashMap<String, String>, Error = anyhow::Error>,
 {
