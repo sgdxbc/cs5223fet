@@ -8,6 +8,7 @@ use oauth2::{
 };
 use serde_derive::Deserialize;
 use std::collections::HashMap;
+use std::env;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use warp::reject;
@@ -37,9 +38,10 @@ impl OAuth {
                 "https://github.com/login/oauth/access_token".to_string(),
             )?),
         )
-        .set_redirect_uri(RedirectUrl::new(
-            "http://localhost:8080/redirect".to_string(),
-        )?);
+        .set_redirect_uri(RedirectUrl::new(format!(
+            "{}/redirect",
+            env::var("CS5223FET_HOST")?
+        ))?);
         let (auth_url, csrf_token) = client.authorize_url(CsrfToken::new_random).url();
         Ok(Self {
             client,
