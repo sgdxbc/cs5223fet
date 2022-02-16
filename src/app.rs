@@ -1,7 +1,6 @@
 use crate::preset::Preset;
 use anyhow::anyhow;
 use futures::prelude::*;
-use redis::aio::Connection;
 use redis::{AsyncCommands, Client};
 use serde::Deserialize as Deser;
 use serde_derive::{Deserialize, Serialize};
@@ -11,7 +10,7 @@ use std::fmt::{self, Display, Formatter};
 use std::mem::take;
 use std::sync::Arc;
 use tokio::fs;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::{select, spawn};
 use warp::ws::{Message, WebSocket};
 
@@ -37,11 +36,15 @@ impl Display for AppStatus {
 }
 
 pub struct App<Preset> {
-    pub status: AppStatus,
-    worker_tx: Option<mpsc::Sender<ToWorker>>,
+    pub status: RwLock<AppStatus>,
+    worker_tx: Mutex<Option<mpsc::Sender<ToWorker>>>,
+    pub data: RwLock<AppData<Preset>>,
+    client: Client,
+}
+
+pub struct AppData<Preset> {
     task_table: HashMap<TaskId, Task<Preset>>,
     pub user_table: HashMap<String, Vec<TaskId>>,
-    conn: Connection,
 }
 
 pub type TaskId = u32;
@@ -60,6 +63,7 @@ pub enum TaskStatus {
     Finished,
     Canceled,
 }
+
 #[derive(Debug, Serialize)]
 struct ToWorker {
     task_id: TaskId,
@@ -77,9 +81,8 @@ struct FromWorker {
 
 impl<P> App<P> {
     pub async fn new() -> anyhow::Result<Self> {
-        let mut conn = Client::open("redis://localhost")?
-            .get_async_connection()
-            .await?;
+        let client = Client::open("redis://localhost")?;
+        let mut conn = client.get_async_connection().await?;
         let mut last_id = 0;
         let mut user_table: HashMap<_, Vec<_>> = HashMap::new();
         loop {
@@ -108,30 +111,32 @@ impl<P> App<P> {
         println!("[app] Initialized with {} past tasks", last_id);
 
         Ok(Self {
-            status: AppStatus::Disconnected(last_id + 1, last_id),
-            worker_tx: None,
-            task_table: HashMap::new(),
-            user_table,
-            conn,
+            status: RwLock::new(AppStatus::Disconnected(last_id + 1, last_id)),
+            worker_tx: Mutex::new(None),
+            data: RwLock::new(AppData {
+                task_table: HashMap::new(),
+                user_table,
+            }),
+            client,
         })
     }
 
-    fn disconnect_worker(&mut self) {
-        self.status = match self.status {
+    async fn disconnect_worker(&self) {
+        let mut status = self.status.write().await;
+        let mut worker_tx = self.worker_tx.lock().await;
+        *status = match *status {
             AppStatus::Disconnected(_, _) => unreachable!(),
             AppStatus::Running(task_id, last_id) => AppStatus::Disconnected(task_id, last_id),
             AppStatus::StandBy(last_id) => AppStatus::Disconnected(last_id + 1, last_id),
         };
-        self.worker_tx = None;
+        *worker_tx = None;
     }
-}
 
-impl<P> App<P> {
-    pub async fn get_task(&mut self, task_id: TaskId) -> anyhow::Result<Task<P>>
+    pub async fn get_task(&self, task_id: TaskId) -> anyhow::Result<Task<P>>
     where
         P: Clone + for<'a> Deser<'a>,
     {
-        if let Some(task) = self.task_table.get(&task_id) {
+        if let Some(task) = self.data.read().await.task_table.get(&task_id) {
             return Ok(Task {
                 user_id: task.user_id.clone(),
                 preset: task.preset.clone(),
@@ -139,8 +144,12 @@ impl<P> App<P> {
                 status: task.status,
             });
         }
-        let mut query: HashMap<String, String> =
-            self.conn.hgetall(format!("task:{}", task_id)).await?;
+        let mut query: HashMap<String, String> = self
+            .client
+            .get_async_connection()
+            .await?
+            .hgetall(format!("task:{}", task_id))
+            .await?;
         if query.is_empty() {
             return Err(anyhow!("task not found"));
         }
@@ -152,26 +161,46 @@ impl<P> App<P> {
         })
     }
 
-    pub fn replace_upload(&mut self, task_id: TaskId, upload: Vec<u8>) {
-        self.task_table.get_mut(&task_id).unwrap().upload = upload;
+    pub async fn replace_upload(&self, task_id: TaskId, upload: Vec<u8>) -> anyhow::Result<()> {
+        let mut data = self.data.write().await;
+        let task = data.task_table.get_mut(&task_id).unwrap();
+        if task.status != TaskStatus::Pending {
+            return Err(anyhow!("task is not pending"));
+        }
+        task.upload = upload;
+        Ok(())
+    }
+
+    // more efficient version of `app.get_task(task_id).user_id == user_id`
+    pub async fn allow_access(&self, user_id: &str, task_id: TaskId) -> bool {
+        self.data
+            .read()
+            .await
+            .user_table
+            .get(user_id)
+            .map(|task_set| task_set.contains(&task_id))
+            .unwrap_or(false)
     }
 }
 
 impl<P: Preset> App<P> {
-    pub async fn connect_worker(app0: Arc<Mutex<Self>>, mut websocket: WebSocket)
+    pub async fn connect_worker(self: &Arc<Self>, mut websocket: WebSocket)
     where
         P: 'static + Send,
     {
-        let mut app = app0.lock().await;
-        if app.worker_tx.is_some() {
+        let mut status = self.status.write().await;
+        let mut worker_tx = self.worker_tx.lock().await;
+
+        if worker_tx.is_some() {
             unimplemented!("multiple worker");
         }
+        let (worker_tx0, mut worker_rx) = mpsc::channel(1);
+        *worker_tx = Some(worker_tx0);
+        drop(worker_tx); // transfer to `send_task`
 
-        let (worker_tx, mut worker_rx) = mpsc::channel(1);
-        app.worker_tx = Some(worker_tx);
-        app.status = if let AppStatus::Disconnected(pending_id, last_id) = app.status {
+        *status = if let AppStatus::Disconnected(pending_id, last_id) = *status {
             if pending_id <= last_id {
-                if let Some(task_id) = app.send_task(pending_id).await {
+                if let Some(task_id) = self.send_task(pending_id).await {
                     AppStatus::Running(task_id, last_id)
                 } else {
                     AppStatus::StandBy(last_id)
@@ -182,8 +211,8 @@ impl<P: Preset> App<P> {
         } else {
             unreachable!();
         };
-        drop(app);
 
+        let app = self.clone();
         spawn(async move {
             loop {
                 select! {
@@ -201,18 +230,20 @@ impl<P: Preset> App<P> {
                             continue;
                         }
                         let from_worker: FromWorker = from_str(&message.to_str().unwrap()).unwrap();
-                        app0.lock().await.finish_task(from_worker).await;
+                        app.finish_task(from_worker).await;
                     }
                     else => break
                 }
             }
             websocket.close().await.unwrap();
-            app0.lock().await.disconnect_worker();
+            app.disconnect_worker().await;
         });
     }
 
-    async fn finish_task(&mut self, from_worker: FromWorker) {
-        if let AppStatus::Running(task_id, last_id) = self.status {
+    async fn finish_task(&self, from_worker: FromWorker) {
+        let mut status = self.status.write().await;
+        let mut data = self.data.write().await;
+        if let AppStatus::Running(task_id, last_id) = *status {
             assert_eq!(task_id, from_worker.task_id);
 
             fs::write(format!("_fs/output/{}", task_id), from_worker.output)
@@ -220,9 +251,14 @@ impl<P: Preset> App<P> {
                 .unwrap();
             println!("[app] finish write _fs/output/{}", task_id);
 
-            self.task_table.get_mut(&task_id).unwrap().status = TaskStatus::Finished;
+            data.task_table.get_mut(&task_id).unwrap().status = TaskStatus::Finished;
+            drop(data); // transfer to `send_task`
+
             let _: () = self
-                .conn
+                .client
+                .get_async_connection()
+                .await
+                .unwrap()
                 .hset(
                     format!("task:{}", task_id),
                     "status",
@@ -232,7 +268,7 @@ impl<P: Preset> App<P> {
                 .unwrap();
 
             let pending_id = task_id + 1;
-            self.status = if pending_id > last_id {
+            *status = if pending_id > last_id {
                 AppStatus::StandBy(last_id)
             } else if let Some(task_id) = self.send_task(pending_id).await {
                 AppStatus::Running(task_id, last_id)
@@ -244,9 +280,13 @@ impl<P: Preset> App<P> {
         }
     }
 
-    async fn send_task(&mut self, mut pending_id: TaskId) -> Option<TaskId> {
+    async fn send_task(&self, mut pending_id: TaskId) -> Option<TaskId> {
+        let mut data = self.data.write().await;
+        let task_table = &mut data.task_table;
+        let worker_tx = self.worker_tx.lock().await;
+
         let to_worker = loop {
-            if let Some(task) = self.task_table.get_mut(&pending_id) {
+            if let Some(task) = task_table.get_mut(&pending_id) {
                 match task.status {
                     TaskStatus::Pending => {
                         break ToWorker {
@@ -263,9 +303,13 @@ impl<P: Preset> App<P> {
                 return None;
             }
         };
-        self.task_table.get_mut(&pending_id).unwrap().status = TaskStatus::Running;
+        task_table.get_mut(&pending_id).unwrap().status = TaskStatus::Running;
+
         let _: () = self
-            .conn
+            .client
+            .get_async_connection()
+            .await
+            .unwrap()
             .hset(
                 format!("task:{}", pending_id),
                 "status",
@@ -273,23 +317,24 @@ impl<P: Preset> App<P> {
             )
             .await
             .unwrap(); // internal communication must success
-        self.worker_tx
-            .as_ref()
-            .unwrap()
-            .send(to_worker)
-            .await
-            .unwrap();
+
+        worker_tx.as_ref().unwrap().send(to_worker).await.unwrap();
         Some(pending_id)
     }
 
-    pub async fn push_task(&mut self, task: Task<P>) -> anyhow::Result<TaskId> {
-        let user_last = self
+    pub async fn push_task(&self, task: Task<P>) -> anyhow::Result<TaskId> {
+        let mut status = self.status.write().await;
+        let data = self.data.read().await;
+
+        let user_last = data
             .user_table
             .get(&task.user_id)
             .and_then(|user_set| user_set.iter().max())
             .cloned()
             .unwrap_or(0);
-        let last_id = match self.status {
+        drop(data); // transfer lock to `register_task`
+
+        let task_id = match *status {
             AppStatus::Disconnected(pending_id, last_id) => {
                 if user_last >= pending_id {
                     return Err(anyhow!("already pending for #{}", user_last));
@@ -303,10 +348,10 @@ impl<P: Preset> App<P> {
                 last_id
             }
             AppStatus::StandBy(last_id) => last_id,
-        };
-        let task_id = last_id + 1;
-        self.register_task(task_id, task).await?;
-        self.status = match self.status {
+        } + 1;
+        self.register_task(task_id, task).await;
+
+        *status = match *status {
             AppStatus::Disconnected(id, _) => AppStatus::Disconnected(id, task_id),
             AppStatus::Running(id, _) => AppStatus::Running(id, task_id),
             AppStatus::StandBy(_) => {
@@ -318,17 +363,23 @@ impl<P: Preset> App<P> {
         Ok(task_id)
     }
 
-    async fn register_task(&mut self, task_id: u32, task: Task<P>) -> anyhow::Result<()> {
+    async fn register_task(&self, task_id: u32, task: Task<P>) {
         assert_eq!(task.status, TaskStatus::Pending);
-        let prev = self.task_table.insert(task_id, task.clone());
+
+        let mut data = self.data.write().await;
+        let prev = data.task_table.insert(task_id, task.clone());
         assert!(prev.is_none());
 
-        self.user_table
+        data.user_table
             .entry(task.user_id.clone())
             .or_default()
             .push(task_id);
 
-        self.conn
+        let _: () = self
+            .client
+            .get_async_connection()
+            .await
+            .unwrap()
             .hset_multiple(
                 format!("task:{}", task_id),
                 &[
@@ -337,7 +388,7 @@ impl<P: Preset> App<P> {
                     ("status", &to_string(&task.status).unwrap()),
                 ],
             )
-            .await?;
-        Ok(())
+            .await
+            .unwrap();
     }
 }
