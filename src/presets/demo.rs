@@ -39,7 +39,7 @@ impl PresetTrait for Preset {
     }
     fn get_timeout(&self) -> u64 {
         match self {
-            Self::Sleep10 => 15,
+            Self::Sleep10 => 8,
             Self::Sleep60 => 65,
         }
     }

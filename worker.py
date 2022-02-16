@@ -1,28 +1,52 @@
 import asyncio
 import websockets
-import json
-import subprocess
-import threading
+import os
+import msgpack
+
+
+OUTPUT_CHUCK = 100000
 
 async def main():
-    async with websockets.connect("ws://localhost:8080/websocket") as websocket:
+    async with websockets.connect(f"ws://{os.environ['CS5223FET_HOST']}/websocket") as websocket:
         print(websocket)
         while True:
-            to_worker = json.loads(await websocket.recv())
+            to_worker = msgpack.loads(await websocket.recv())
             print(to_worker['command'])
+            with open('submit.tar.gz', 'wb') as submit_file:
+                submit_file.write(bytes(to_worker['upload']))
 
-            signal = asyncio.Future()
-            def work_thread():
-                p = subprocess.run(to_worker['command'], shell=True, capture_output=True, text=True)
-                signal.set_result(p.stdout)
-            threading.Thread(target=work_thread).start()
+            proc = await asyncio.create_subprocess_shell(to_worker['command'],
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            
+            async def reader(proc):
+                output = []
+                while True:
+                    chuck = await proc.stdout.read(OUTPUT_CHUCK)
+                    print(chuck)
+                    if not chuck:
+                        return ''.join(output)
+                    chuck_length = len(chuck)
+                    output.append(chuck.decode())
+                    output = output[-2:]
+            
+            output_task = asyncio.create_task(reader(proc))
+            
+            is_timeout = False
+            try:
+                await asyncio.wait_for(proc.wait(), to_worker['timeout'])
+            except asyncio.TimeoutError:
+                is_timeout = True
+                proc.terminate()
+            
+            output = await output_task
+            print(f'output length: {len(output)}')
+            if is_timeout:
+                output += '\n*** Terminated on hard timeout.'
 
-            output = await signal
             from_worker = {
-                "task_id": to_worker["task_id"],
-                "output": output,
+                'task_id': to_worker['task_id'],
+                'output': output,
             }
-            print(from_worker)
-            await websocket.send(json.dumps(from_worker))
+            await websocket.send(msgpack.dumps(from_worker))
 
 asyncio.run(main())

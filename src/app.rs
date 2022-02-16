@@ -2,6 +2,7 @@ use crate::preset::Preset;
 use anyhow::anyhow;
 use futures::prelude::*;
 use redis::{AsyncCommands, Client};
+use rmp_serde::{from_slice, to_vec_named};
 use serde::Deserialize as Deser;
 use serde_derive::{Deserialize, Serialize};
 use serde_json::{from_str, to_string};
@@ -264,19 +265,19 @@ impl<P: Preset> App<P> {
             loop {
                 select! {
                     Some(to_worker) = worker_rx.recv() => {
-                        websocket.send(Message::text(to_string(&to_worker).unwrap())).await.unwrap();
+                        websocket.send(Message::binary(to_vec_named(&to_worker).unwrap())).await.unwrap();
                     }
                     Some(Ok(message)) = websocket.next() => {
                         if message.is_close() {
                             break;
                         }
-                        if !message.is_text()   {
-                            if message.is_binary() {
-                                println!("[app] warning: binary message from worker: {:?}", message);
+                        if !message.is_binary()   {
+                            if message.is_text() {
+                                println!("[app] warning: text message from worker: {:?}", message);
                             }
                             continue;
                         }
-                        let from_worker: FromWorker = from_str(&message.to_str().unwrap()).unwrap();
+                        let from_worker: FromWorker = from_slice(&message.into_bytes()).unwrap();
                         app.finish_task(from_worker).await;
                     }
                     else => break
