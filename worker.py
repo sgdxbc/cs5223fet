@@ -2,9 +2,9 @@ import asyncio
 import websockets
 import os
 import msgpack
+import collections
 
-
-OUTPUT_CHUCK = 100000
+OUTPUT_CHUCK = 10000000
 
 async def main():
     async with websockets.connect(f"ws://{os.environ['CS5223FET_HOST']}/websocket") as websocket:
@@ -19,15 +19,17 @@ async def main():
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
             
             async def reader(proc):
-                output = []
+                output = collections.deque()
+                output_length = 0
                 while True:
                     chuck = await proc.stdout.read(OUTPUT_CHUCK)
-                    print(chuck)
                     if not chuck:
                         return ''.join(output)
-                    chuck_length = len(chuck)
                     output.append(chuck.decode())
-                    output = output[-2:]
+                    output_length += len(chuck)
+                    while output_length > OUTPUT_CHUCK:
+                        discard = output.popleft()
+                        output_length -= len(discard)
             
             output_task = asyncio.create_task(reader(proc))
             

@@ -265,7 +265,9 @@ impl<P: Preset> App<P> {
             loop {
                 select! {
                     Some(to_worker) = worker_rx.recv() => {
-                        websocket.send(Message::binary(to_vec_named(&to_worker).unwrap())).await.unwrap();
+                        if websocket.send(Message::binary(to_vec_named(&to_worker).unwrap())).await.is_err() {
+                            break; // TODO rescue running task
+                        }
                     }
                     Some(Ok(message)) = websocket.next() => {
                         if message.is_close() {
