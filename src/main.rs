@@ -151,12 +151,15 @@ window.addEventListener('DOMContentLoaded', start);
                 } else {
                     format!("")
                 };
-                let replace_prompt = if task.status == TaskStatus::Pending {
+                let edit_prompt = if task.status == TaskStatus::Pending {
                     format!(
                         r#"
-<form action="/task/{}/replace" method="post" enctype="multipart/form-data">
+<form action="/task/{0}/replace" method="post" enctype="multipart/form-data">
     <input type="file" name="upload">
     <button type="submit">Replace upload</button>
+</form>
+<form action="/task/{0}/cancel" method="post">
+    <button type="submit">Cancel</button>
 </form>
 "#,
                         task_id
@@ -172,7 +175,7 @@ window.addEventListener('DOMContentLoaded', start);
 {}
 {}
 "#,
-                    HOME_PROMPT, task_id, task.preset, task.status, output_prompt, replace_prompt
+                    HOME_PROMPT, task_id, task.preset, task.status, output_prompt, edit_prompt
                 )))
             })
         },
@@ -211,6 +214,26 @@ window.addEventListener('DOMContentLoaded', start);
 
                 Ok(reply::html(format!(
                     "{}<p>Task #{} upload updated.</p>",
+                    HOME_PROMPT, task_id
+                )))
+            })
+        }));
+
+    let cancel_app = app.clone();
+    let route = route.or(oauth
+        .user_id()
+        .and(warp::path!("task" / TaskId / "cancel"))
+        .and(warp::post())
+        .and_then(move |user_id: String, task_id| {
+            let cancel_app = cancel_app.clone();
+            with_anyhow(async move {
+                if !cancel_app.allow_access(&user_id, task_id).await {
+                    return Err(anyhow!("cancel rejected"));
+                }
+
+                cancel_app.cancel_task(task_id).await?;
+                Ok(reply::html(format!(
+                    "{}<p> Task #{} canceled.</p>",
                     HOME_PROMPT, task_id
                 )))
             })

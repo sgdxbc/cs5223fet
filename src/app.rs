@@ -171,6 +171,29 @@ impl<P> App<P> {
         Ok(())
     }
 
+    pub async fn cancel_task(&self, task_id: TaskId) -> anyhow::Result<()> {
+        let mut data = self.data.write().await;
+        let task = data.task_table.get_mut(&task_id).unwrap();
+        if task.status != TaskStatus::Pending {
+            return Err(anyhow!("task is not pending"));
+        }
+        task.status = TaskStatus::Canceled;
+
+        let _: () = self
+            .client
+            .get_async_connection()
+            .await?
+            .hset(
+                format!("task:{}", task_id),
+                "status",
+                to_string(&TaskStatus::Canceled).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        Ok(())
+    }
+
     // more efficient version of `app.get_task(task_id).user_id == user_id`
     pub async fn allow_access(&self, user_id: &str, task_id: TaskId) -> bool {
         self.data
@@ -329,7 +352,16 @@ impl<P: Preset> App<P> {
         let user_last = data
             .user_table
             .get(&task.user_id)
-            .and_then(|user_set| user_set.iter().max())
+            .and_then(|task_list| task_list.last())
+            .and_then(|last_task| {
+                // assert anything not present in `task_table` is unrelated
+                let status = data.task_table.get(&last_task)?.status;
+                if status == TaskStatus::Pending || status == TaskStatus::Running {
+                    Some(last_task)
+                } else {
+                    None
+                }
+            })
             .cloned()
             .unwrap_or(0);
         drop(data); // transfer lock to `register_task`
