@@ -37,7 +37,7 @@ impl PresetTrait for Preset {
             Self::Sleep60 => "date; sleep 60; date",
         })
     }
-    fn get_timeout(&self) -> u32 {
+    fn get_timeout(&self) -> u64 {
         match self {
             Self::Sleep10 => 15,
             Self::Sleep60 => 65,

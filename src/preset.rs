@@ -15,5 +15,5 @@ where
 {
     fn render_html() -> String;
     fn get_command(&self) -> String;
-    fn get_timeout(&self) -> u32;
+    fn get_timeout(&self) -> u64;
 }

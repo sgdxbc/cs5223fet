@@ -151,6 +151,14 @@ window.addEventListener('DOMContentLoaded', start);
                 } else {
                     format!("")
                 };
+                let wait_time_prompt = if task.status == TaskStatus::Pending {
+                    format!(
+                        r", maximum waiting time: {:?}",
+                        task_app.get_wait_time(task_id).await
+                    )
+                } else {
+                    format!("")
+                };
                 let edit_prompt = if task.status == TaskStatus::Pending {
                     format!(
                         r#"
@@ -171,11 +179,17 @@ window.addEventListener('DOMContentLoaded', start);
                     r#"
 {}
 <p>#{} {}</p>
-<p>{:?}</p>
+<p>{:?}{}</p>
 {}
 {}
 "#,
-                    HOME_PROMPT, task_id, task.preset, task.status, output_prompt, edit_prompt
+                    HOME_PROMPT,
+                    task_id,
+                    task.preset,
+                    task.status,
+                    wait_time_prompt,
+                    output_prompt,
+                    edit_prompt
                 )))
             })
         },

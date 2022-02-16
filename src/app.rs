@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 use std::mem::take;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::{select, spawn};
@@ -69,7 +70,7 @@ struct ToWorker {
     task_id: TaskId,
     command: String,
     upload: Vec<u8>,
-    timeout: u32, // in second
+    timeout: u64, // in second
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,6 +208,29 @@ impl<P> App<P> {
 }
 
 impl<P: Preset> App<P> {
+    pub async fn get_wait_time(&self, task_id: TaskId) -> Duration
+    where
+        P: Preset,
+    {
+        let start_task = match *self.status.read().await {
+            AppStatus::Disconnected(pending_id, _) => pending_id,
+            AppStatus::Running(task_id, _) => task_id,
+            AppStatus::StandBy(_) => return Duration::from_secs(0),
+        };
+        let wait_time = self
+            .data
+            .read()
+            .await
+            .task_table
+            .iter()
+            .filter(|(id, task)| {
+                (start_task..task_id).contains(id) && task.status == TaskStatus::Pending
+            })
+            .map(|(_, task)| task.preset.get_timeout())
+            .sum();
+        Duration::from_secs(wait_time)
+    }
+
     pub async fn connect_worker(self: &Arc<Self>, mut websocket: WebSocket)
     where
         P: 'static + Send,
