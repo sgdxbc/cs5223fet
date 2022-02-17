@@ -77,6 +77,13 @@ function onSubmit(e) {{
 window.addEventListener('DOMContentLoaded', start);
 </script>
 {}
+<ul>
+    <li>At most one outstanding (i.e., pending or running) task is allowed for 
+    one GitHub ID.</li>
+    <li>You can replace upload file for a pending task, but you are not allowed 
+    to change to another set of settings.</li>
+    <li>Upload file size limits to about 50KB.</li>
+</ul>
 "#,
                 UNIVERSAL,
                 home_app.status.read().await,
@@ -182,6 +189,13 @@ window.addEventListener('DOMContentLoaded', start);
 <p>{:?}{}</p>
 {}
 {}
+<ul>
+    <li>Server does not store upload file on disk, so upon system failure it has
+    to cancel pending/running task if upload file is lost. Sorry for 
+    inconvenience if that happens.</li>
+    <li>Test output is trimmed and only the last 50MB is available for 
+    downloading.</li>
+</ul>
 "#,
                     HOME_PROMPT,
                     task_id,

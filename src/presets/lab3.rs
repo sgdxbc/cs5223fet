@@ -92,6 +92,12 @@ impl PresetTrait for Preset {
     <option value="yes">Yes</option>
     <option value="no">No</option>
 </select>
+<ul>
+    <li>If you want to run all tests, select "All tests" for both selectors.</li>
+    <li>If you want to enable logging, you must run one specific test.</li>
+    <li>If you want to enable checking, some of the running test must be search
+    test.</li>
+</ul>
 "#,
             (1..=27)
                 .map(|i| format!(r#"<option value="{0}">Test {0}</option>"#, i))

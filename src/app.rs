@@ -242,7 +242,8 @@ impl<P: Preset> App<P> {
             .task_table
             .iter()
             .filter(|(id, task)| {
-                (start_task..task_id).contains(id) && task.status == TaskStatus::Pending
+                (start_task..task_id).contains(id)
+                    && (task.status == TaskStatus::Pending || task.status == TaskStatus::Running)
             })
             .map(|(_, task)| task.preset.get_timeout())
             .sum();
