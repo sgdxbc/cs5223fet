@@ -126,7 +126,7 @@ impl PresetTrait for Preset {
     fn get_timeout(&self) -> u64 {
         10 // extra credit for compile, collect output, etc.
         + if self.part == 0 {
-            0 //
+            700
         } else {
             match self.test {
                 1 => 2,

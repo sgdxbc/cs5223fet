@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::time::sleep;
 use tokio::{select, spawn};
 use warp::ws::{Message, WebSocket};
 
@@ -297,6 +298,11 @@ impl<P: Preset> App<P> {
                         }
                         let from_worker: FromWorker = from_slice(&message.into_bytes()).unwrap();
                         app.finish_task(from_worker).await;
+                    }
+                    _ = sleep(Duration::from_secs(10)) => {
+                        if websocket.send(Message::ping([])).await.is_err() {
+                            break;
+                        }
                     }
                     else => break
                 }
