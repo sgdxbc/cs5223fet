@@ -128,7 +128,23 @@ impl<P> App<P> {
         let mut worker_tx = self.worker_tx.lock().await;
         *status = match *status {
             AppStatus::Disconnected(_, _) => unreachable!(),
-            AppStatus::Running(task_id, last_id) => AppStatus::Disconnected(task_id, last_id),
+            AppStatus::Running(task_id, last_id) => {
+                let mut data = self.data.write().await;
+                data.task_table.get_mut(&task_id).unwrap().status = TaskStatus::Canceled;
+                let _: () = self
+                    .client
+                    .get_async_connection()
+                    .await
+                    .unwrap()
+                    .hset(
+                        format!("task:{}", task_id),
+                        "status",
+                        to_string(&TaskStatus::Canceled).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                AppStatus::Disconnected(task_id + 1, last_id)
+            }
             AppStatus::StandBy(last_id) => AppStatus::Disconnected(last_id + 1, last_id),
         };
         *worker_tx = None;
@@ -266,7 +282,7 @@ impl<P: Preset> App<P> {
                 select! {
                     Some(to_worker) = worker_rx.recv() => {
                         if websocket.send(Message::binary(to_vec_named(&to_worker).unwrap())).await.is_err() {
-                            break; // TODO rescue running task
+                            break;
                         }
                     }
                     Some(Ok(message)) = websocket.next() => {

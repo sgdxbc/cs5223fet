@@ -12,7 +12,7 @@ use std::sync::Arc;
 use warp::multipart::FormData;
 use warp::{reply, Filter};
 
-use cs5223fet::presets::demo::Preset;
+use cs5223fet::presets::lab3::Preset;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

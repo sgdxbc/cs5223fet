@@ -1,22 +1,24 @@
 import asyncio
 import websockets
 import os
+import signal
 import msgpack
 import collections
 
-OUTPUT_CHUCK = 10000000
+OUTPUT_CHUCK = 50000000
 
 async def main():
     async with websockets.connect(f"ws://{os.environ['CS5223FET_HOST']}/websocket") as websocket:
         print(websocket)
         while True:
             to_worker = msgpack.loads(await websocket.recv())
-            print(to_worker['command'])
+            print(f'Task #{to_worker["task_id"]}', to_worker['command'])
             with open('submit.tar.gz', 'wb') as submit_file:
                 submit_file.write(bytes(to_worker['upload']))
 
             proc = await asyncio.create_subprocess_shell(to_worker['command'],
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                preexec_fn=os.setsid)
             
             async def reader(proc):
                 output = collections.deque()
@@ -27,7 +29,7 @@ async def main():
                         return ''.join(output)
                     output.append(chuck.decode())
                     output_length += len(chuck)
-                    while output_length > OUTPUT_CHUCK:
+                    while output_length - len(output[0]) >= OUTPUT_CHUCK:
                         discard = output.popleft()
                         output_length -= len(discard)
             
@@ -38,7 +40,8 @@ async def main():
                 await asyncio.wait_for(proc.wait(), to_worker['timeout'])
             except asyncio.TimeoutError:
                 is_timeout = True
-                proc.terminate()
+                print(f'kill {proc}')
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             
             output = await output_task
             print(f'output length: {len(output)}')

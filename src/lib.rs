@@ -6,6 +6,7 @@ pub mod oauth;
 pub mod preset;
 pub mod presets {
     pub mod demo;
+    pub mod lab3;
 }
 
 #[derive(Debug)]
