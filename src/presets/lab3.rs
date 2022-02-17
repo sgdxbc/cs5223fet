@@ -94,7 +94,7 @@ impl PresetTrait for Preset {
 </select>
 <ul>
     <li>If you want to run all tests, select "All tests" for both selectors.</li>
-    <li>If you want to enable logging, you must run one specific test.</li>
+    <li>If you want to enable logging, you must run one specific run test.</li>
     <li>If you want to enable checking, some of the running test must be search
     test.</li>
 </ul>
@@ -115,7 +115,7 @@ impl PresetTrait for Preset {
             r#"
             cd $(mktemp -d);
             trap "rm -rf $(pwd)" EXIT TERM; 
-            cp -r /usr/src/myapp/* .; 
+            cp -r /home/s/sung/myapp/* .; 
             tar -xf submit.tar.gz && ./run-tests.py --lab 3 --part 1 {} {} {};"#,
             if self.part == 0 {
                 format!("")

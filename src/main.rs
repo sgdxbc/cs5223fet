@@ -8,6 +8,7 @@ use cs5223fet::with_anyhow;
 use futures::prelude::*;
 use serde_json::from_slice;
 use std::collections::HashMap;
+use std::env;
 use std::sync::Arc;
 use warp::multipart::FormData;
 use warp::{reply, Filter};
@@ -307,6 +308,8 @@ window.addEventListener('DOMContentLoaded', start);
 
     let login_prompt = format!(r#"{}<a href="{}">Login</a>"#, UNIVERSAL, oauth.url);
     let route = OAuth::recover(route, login_prompt);
-    warp::serve(route).run(([0, 0, 0, 0], 8080)).await;
+    warp::serve(route)
+        .run(([0, 0, 0, 0], env::var("CS5223FET_PORT")?.parse()?))
+        .await;
     Ok(())
 }

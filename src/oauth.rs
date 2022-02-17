@@ -30,9 +30,7 @@ impl OAuth {
     pub fn new() -> anyhow::Result<Self> {
         let client = BasicClient::new(
             ClientId::new("60d36866efdb1f901014".to_string()),
-            Some(ClientSecret::new(
-                "23cad322082b225cc3638f3d4002183ddc39c0fb".to_string(),
-            )),
+            Some(ClientSecret::new(env::var("CS5223FET_SECRET")?)),
             AuthUrl::new("https://github.com/login/oauth/authorize".to_string())?,
             Some(TokenUrl::new(
                 "https://github.com/login/oauth/access_token".to_string(),
@@ -40,7 +38,7 @@ impl OAuth {
         )
         .set_redirect_uri(RedirectUrl::new(format!(
             "{}/redirect",
-            env::var("CS5223FET_HOST")?
+            env::var("CS5223FET_URL")?
         ))?);
         let (auth_url, csrf_token) = client.authorize_url(CsrfToken::new_random).url();
         Ok(Self {

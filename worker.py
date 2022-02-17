@@ -11,7 +11,7 @@ async def main():
     async with websockets.connect(f"ws://{os.environ['CS5223FET_HOST']}/websocket") as websocket:
         print(websocket)
         while True:
-            to_worker = msgpack.loads(await websocket.recv())
+            to_worker = msgpack.loads(await websocket.recv(), raw=False)
             print(f'Task #{to_worker["task_id"]}', to_worker['command'])
             with open('submit.tar.gz', 'wb') as submit_file:
                 submit_file.write(bytes(to_worker['upload']))
@@ -52,6 +52,6 @@ async def main():
                 'task_id': to_worker['task_id'],
                 'output': output,
             }
-            await websocket.send(msgpack.dumps(from_worker))
+            await websocket.send(msgpack.dumps(from_worker, use_bin_type=True))
 
 asyncio.run(main())
