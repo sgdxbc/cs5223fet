@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 use tokio::sync::{mpsc, Mutex, RwLock};
-use tokio::time::sleep;
+use tokio::time::{sleep, Instant};
 use tokio::{select, spawn};
 use warp::ws::{Message, WebSocket};
 
@@ -280,12 +280,14 @@ impl<P: Preset> App<P> {
 
         let app = self.clone();
         spawn(async move {
+            let mut worker_deadline = None;
             loop {
                 select! {
                     Some(to_worker) = worker_rx.recv() => {
                         if websocket.send(Message::binary(to_vec_named(&to_worker).unwrap())).await.is_err() {
                             break;
                         }
+                        worker_deadline = Some(Instant::now() + Duration::from_secs(to_worker.timeout + 5));
                     }
                     Some(Ok(message)) = websocket.next() => {
                         if message.is_close() {
@@ -299,13 +301,21 @@ impl<P: Preset> App<P> {
                         }
                         let from_worker: FromWorker = from_slice(&message.into_bytes()).unwrap();
                         app.finish_task(from_worker).await;
+
+                        worker_deadline = None;
                     }
                     _ = sleep(Duration::from_secs(10)) => {
+                        if let Some(worker_deadline) = worker_deadline {
+                            if Instant::now() > worker_deadline {
+                                println!("[app] disconnect worker because no response");
+                                break;
+                            }
+                        }
                         if websocket.send(Message::ping([])).await.is_err() {
                             break;
                         }
                     }
-                    else => break
+                    else => break,
                 }
             }
             websocket.close().await.unwrap();
