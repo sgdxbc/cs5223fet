@@ -49,9 +49,8 @@ async fn main() -> anyhow::Result<()> {
             reply::html(format!(
                 r#"
 {}
-<p>CS5223 Slow and Hard Test</p>
-<p>System status: {}</p>
-<p>GitHub id: {}</p>
+<p>CS5223 Slow and Hard Test<sup>beta</sup></p>
+<p>System status: {} GitHub ID: {}</p>
 <form id="submit-form" action="/task/submit" method="post" enctype="multipart/form-data">
     <input type="file" name="upload">
     <input id="submit-preset" type="hidden" name="preset">

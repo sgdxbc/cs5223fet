@@ -1,6 +1,7 @@
 use crate::preset::Preset as PresetTrait;
 use anyhow::anyhow;
 use serde_derive::{Deserialize, Serialize};
+use serde_json::{from_str, to_string};
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 
@@ -21,14 +22,7 @@ enum LogLevel {
 impl TryFrom<HashMap<String, String>> for Preset {
     type Error = anyhow::Error;
     fn try_from(form: HashMap<String, String>) -> anyhow::Result<Self> {
-        let part = form
-            .get(":part")
-            .ok_or(anyhow!("no part field"))?
-            .parse::<u32>()?;
-        let test = form
-            .get(":test")
-            .ok_or(anyhow!("no test field"))?
-            .parse::<u32>()?;
+        let (part, test) = from_str(form.get(":test").ok_or(anyhow!("no test field"))?)?;
         if part == 0 && test == 0 {
         } else if part == 1 && (1..=27).contains(&test) {
         } else {
@@ -74,13 +68,9 @@ impl PresetTrait for Preset {
     fn render_html() -> String {
         format!(
             r#"
-<p>Lab 3</p>
-<select name=":part">
-    <option value="0">All tests</option>
-    <option value="1" selected="selected">Part 1</option>
-</select>
+<p>Lab 3 Paxos</p>
 <select name=":test">
-    <option value="0">All tests</option>
+    <option value="{}">All tests</option>
     {}
 </select>
 <label for="log-level">Log level:</label>
@@ -93,7 +83,6 @@ impl PresetTrait for Preset {
     <option value="no" selected="selected">No</option>
 </select>
 <ul>
-    <li>If you want to run all tests, select "All tests" for both selectors.</li>
     <li>If you want to enable logging, you must run one specific run test.</li>
     <li>If you want to enable checking, some of the running test must be search
     test.</li>
@@ -102,15 +91,17 @@ impl PresetTrait for Preset {
     </li>
 </ul>
 "#,
+            to_string(&(0, 0)).unwrap(),
             (1..=27)
                 .map(|i| format!(
-                    r#"<option value="{0}"{1}>Test {0}</option>"#,
-                    i,
+                    r#"<option value="{}"{}>Part 1 Test {}</option>"#,
+                    to_string(&(1, i)).unwrap(),
                     if i == 1 {
                         r#" selected="selected""#
                     } else {
                         ""
-                    }
+                    },
+                    i
                 ))
                 .collect::<Vec<_>>()
                 .join(""),
@@ -140,7 +131,7 @@ impl PresetTrait for Preset {
         )
     }
     fn get_timeout(&self) -> u64 {
-        10 // extra credit for compile, collect output, etc.
+        5 // extra credit for compile, collect output, etc.
         + if self.part == 0 {
             700
         } else {
