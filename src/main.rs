@@ -1,6 +1,5 @@
 use anyhow::anyhow;
 use bytes::BufMut;
-use const_format::concatcp;
 use cs5223fet::app::{App, Task, TaskId, TaskStatus};
 use cs5223fet::oauth::OAuth;
 use cs5223fet::preset::Preset as _;
@@ -17,11 +16,15 @@ use cs5223fet::presets::lab3::Preset;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    const UNIVERSAL: &'static str = r#"
+    fn universal() -> &'static str {
+        r#"
 <link href="https://fonts.googleapis.com/css2?family=Fira+Sans&display=swap" rel="stylesheet">
 <style>html { font-family: 'Fira Sans', sans-serif; }</style>
-"#;
-    const HOME_PROMPT: &'static str = concatcp!(UNIVERSAL, r#"<a href="/">Home</a>"#);
+"#
+    }
+    fn home_prompt() -> String {
+        format!(r#"{}<a href="/">Home</a>"#, universal())
+    }
 
     let oauth = Arc::new(OAuth::new()?);
     let app = Arc::new(App::<Preset>::new().await?);
@@ -86,7 +89,7 @@ window.addEventListener('DOMContentLoaded', start);
     <li>Upload file size limits to about 50KB.</li>
 </ul>
 "#,
-                UNIVERSAL,
+                universal(),
                 home_app.status.read().await,
                 id,
                 Preset::render_html(),
@@ -140,7 +143,8 @@ window.addEventListener('DOMContentLoaded', start);
                     .await?;
                 Ok(reply::html(format!(
                     "{}<p>Task #{} submitted</p>",
-                    HOME_PROMPT, task_id
+                    home_prompt(),
+                    task_id
                 )))
             })
         }));
@@ -198,7 +202,7 @@ window.addEventListener('DOMContentLoaded', start);
     downloading.</li>
 </ul>
 "#,
-                    HOME_PROMPT,
+                    home_prompt(),
                     task_id,
                     task.preset,
                     task.status,
@@ -243,7 +247,8 @@ window.addEventListener('DOMContentLoaded', start);
 
                 Ok(reply::html(format!(
                     "{}<p>Task #{} upload updated.</p>",
-                    HOME_PROMPT, task_id
+                    home_prompt(),
+                    task_id
                 )))
             })
         }));
@@ -263,7 +268,8 @@ window.addEventListener('DOMContentLoaded', start);
                 cancel_app.cancel_task(task_id).await?;
                 Ok(reply::html(format!(
                     "{}<p> Task #{} canceled.</p>",
-                    HOME_PROMPT, task_id
+                    home_prompt(),
+                    task_id
                 )))
             })
         }));
@@ -294,7 +300,7 @@ window.addEventListener('DOMContentLoaded', start);
         .untuple_one()
         .and(warp::fs::dir("_fs/output")));
 
-    let route = route.or(oauth.redirect(HOME_PROMPT.to_string()));
+    let route = route.or(oauth.redirect(home_prompt()));
 
     let websocket_app = app.clone();
     let route = route.or(warp::path("websocket")
@@ -306,7 +312,7 @@ window.addEventListener('DOMContentLoaded', start);
             })
         }));
 
-    let login_prompt = format!(r#"{}<a href="{}">Login</a>"#, UNIVERSAL, oauth.url);
+    let login_prompt = format!(r#"{}<a href="{}">Login</a>"#, universal(), oauth.url);
     let route = OAuth::recover(route, login_prompt);
     warp::serve(route)
         .run(([0, 0, 0, 0], env::var("CS5223FET_PORT")?.parse()?))
