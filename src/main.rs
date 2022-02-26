@@ -15,7 +15,7 @@ use warp::{reply, Filter};
 
 use cs5223fet::presets::lab3::Preset;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     const UNIVERSAL: &'static str = r#"
 <link href="https://fonts.googleapis.com/css2?family=Fira+Sans&display=swap" rel="stylesheet">
@@ -194,7 +194,7 @@ window.addEventListener('DOMContentLoaded', start);
     <li>Server does not store upload file on disk, so upon system failure it has
     to cancel pending/running task if upload file is lost. Sorry for 
     inconvenience if that happens.</li>
-    <li>Test output is trimmed and only the last 50MB is available for 
+    <li>Test output is trimmed and only the last 10MB is available for 
     downloading.</li>
 </ul>
 "#,

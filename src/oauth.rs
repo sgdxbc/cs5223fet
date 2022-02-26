@@ -29,7 +29,7 @@ pub struct OAuth {
 impl OAuth {
     pub fn new() -> anyhow::Result<Self> {
         let client = BasicClient::new(
-            ClientId::new("60d36866efdb1f901014".to_string()),
+            ClientId::new(env::var("CS5223FET_CLIENT_ID")?),
             Some(ClientSecret::new(env::var("CS5223FET_SECRET")?)),
             AuthUrl::new("https://github.com/login/oauth/authorize".to_string())?,
             Some(TokenUrl::new(
