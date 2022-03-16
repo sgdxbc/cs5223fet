@@ -7,6 +7,7 @@ pub mod preset;
 pub mod presets {
     pub mod demo;
     pub mod lab3;
+    pub mod lab4;
 }
 
 #[derive(Debug)]

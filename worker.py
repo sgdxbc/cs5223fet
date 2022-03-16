@@ -8,7 +8,7 @@ import tempfile
 import pathlib
 import shutil
 
-OUTPUT_CHUCK = 50000000
+OUTPUT_CHUCK = 10000000
 
 async def main():
     async with websockets.connect(f"ws://{os.environ['CS5223FET_HOST']}/websocket") as websocket:
@@ -36,7 +36,7 @@ async def main():
                             return ''.join(output)
                         output.append(chuck.decode())
                         output_length += len(chuck)
-                        while output_length - len(output[0]) >= OUTPUT_CHUCK:
+                        while len(output) > 1 and output_length - len(output[0]) >= OUTPUT_CHUCK:
                             discard = output.popleft()
                             output_length -= len(discard)
                 
